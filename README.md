@@ -78,6 +78,10 @@ Artifacts are written to `dist/AriaFlow.app`, `dist/AriaFlow-<version>.zip`, and
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening an issue or pull request. Remove private download URLs, credentials, and RPC Secrets from reports. Follow [SECURITY.md](SECURITY.md) for vulnerability reporting.
 
+## 致谢 / Acknowledgements
+
+Thanks to [AnInsomniacy/aria2-next](https://github.com/AnInsomniacy/aria2-next) and [AnInsomniacy/motrix-next](https://github.com/AnInsomniacy/motrix-next).
+
 ## Licensing
 
 AriaFlow source code is available under the [MIT License](LICENSE). Bundled `aria2-next` engines are separate GPL-2.0 components; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and [docs/SIDECAR.md](docs/SIDECAR.md) for their source, checksums, and redistribution details.

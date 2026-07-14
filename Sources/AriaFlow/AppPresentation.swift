@@ -29,10 +29,8 @@ enum AppPresentation {
 
         if !store.settings.showMainWindowOnLaunch && !mainWindowPresentationRequested {
             ignoreMainWindowDisappearUntil = Date().addingTimeInterval(1)
-            DispatchQueue.main.async {
-                mainWindow?.orderOut(nil)
-                updateActivationPolicy(store: store)
-            }
+            mainWindow?.orderOut(nil)
+            updateActivationPolicy(store: store)
             return
         }
 
@@ -58,6 +56,7 @@ enum AppPresentation {
 
     static func settingsDidAppear() {
         prepareForWindowPresentation()
+        activateOnNextRunLoop()
     }
 
     static func settingsDidDisappear(store: AppStore) {

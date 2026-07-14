@@ -14,12 +14,11 @@ final class AriaFlowAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItemEventMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.leftMouseDown, .leftMouseUp]
+            matching: [.leftMouseDown]
         ) { [weak self] event in
             guard event.window?.level == .statusBar else { return event }
-            if event.type == .leftMouseDown {
-                self?.requestMainWindow()
-            }
+            guard !event.modifierFlags.contains(.command) else { return event }
+            self?.requestMainWindow()
             return nil
         }
     }

@@ -1,6 +1,7 @@
 name: Verify and Release
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches: [main]
@@ -31,6 +32,15 @@ jobs:
             export APP_VERSION="${APP_VERSION#v}"
           fi
           scripts/verify_release.sh
+      - name: Upload test build
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: AriaFlow-test-${{ github.run_id }}
+          path: |
+            dist/AriaFlow-*.zip
+            dist/AriaFlow-*.zip.sha256
+          if-no-files-found: error
       - name: Upload release artifacts
         if: startsWith(github.ref, 'refs/tags/')
         uses: actions/upload-artifact@v4

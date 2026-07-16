@@ -17,7 +17,7 @@ AriaFlow 是 macOS 原生 SwiftUI 下载客户端，使用本地随包的 `aria2
 ### 功能
 
 - 下载队列、开始/暂停、删除、在 Finder 中显示和复制链接。
-- 直接粘贴 Telegram 消息链接，交给本机 `tdl` 下载；无需先在 Telegram 客户端缓存再另存。
+- 直接粘贴 Telegram 消息链接，交给本机 `tdl` 下载；无需先在 Telegram 客户端缓存再另存，并实时显示进度、已下载大小、速度与剩余时间。
 - 任务历史、搜索、状态筛选、菜单栏速度和 Dock 进度。
 - 可配置保存位置、并发数、分片数、单服务器连接数和上下行限速。
 - 可加载本地 BT Peer Blocklist，并在运行时重新加载或清除。
@@ -38,7 +38,7 @@ brew install telegram-downloader
 tdl login -T qr
 ```
 
-登录完成后，在“新建任务 → Telegram”中粘贴一个或多个具体消息链接，例如 `https://t.me/channel/123`。AriaFlow 会顺序执行任务，支持暂停后通过 `tdl --continue` 断点续传，并自动下载同一相册中的媒体。
+登录完成后，在“新建任务 → Telegram”中粘贴一个或多个具体消息链接，例如 `https://t.me/channel/123`。AriaFlow 会顺序执行任务，支持暂停后通过 `tdl --continue` 断点续传，并自动下载同一相册中的媒体。新建任务时选择的完整目录会直接传给 `tdl`，并显示在任务行中。
 
 ### 下载与安装
 
@@ -65,7 +65,7 @@ AriaFlow is a native SwiftUI download client for macOS. It runs a bundled local 
 ### Highlights
 
 - Download queue with start, pause, delete, Reveal in Finder, and copy-link actions.
-- Paste Telegram message links and download them through local `tdl`, without first caching the media in the Telegram client.
+- Paste Telegram message links and download them through local `tdl`, without first caching the media in the Telegram client, while viewing live progress, downloaded size, speed, and ETA.
 - Task history, search, status filters, menu bar speed, and Dock progress.
 - Configurable save location, concurrency, split count, per-server connections, and transfer limits.
 - Local BT peer blocklist loading with runtime reload and clearing.
@@ -86,7 +86,7 @@ brew install telegram-downloader
 tdl login -T qr
 ```
 
-Then open **New Task → Telegram** and paste one or more concrete message links such as `https://t.me/channel/123`. AriaFlow runs Telegram jobs sequentially, resumes interrupted jobs with `tdl --continue`, and includes media from grouped messages.
+Then open **New Task → Telegram** and paste one or more concrete message links such as `https://t.me/channel/123`. AriaFlow runs Telegram jobs sequentially, resumes interrupted jobs with `tdl --continue`, and includes media from grouped messages. The directory selected in the new-task sheet is passed directly to `tdl` and shown on the task row.
 
 ### Download and install
 

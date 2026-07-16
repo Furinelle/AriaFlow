@@ -8,10 +8,16 @@ All notable changes to AriaFlow are documented in this file.
 
 - Added direct Telegram video and media downloads from message links through a locally installed `tdl`.
 - Added Telegram task validation, sequential process orchestration, pause/resume, grouped-message handling, task history, and tdl status guidance.
+- Added live Telegram progress, downloaded size, percentage, transfer speed, and ETA from `tdl` output.
 
 ### Changed
 
 - Kept task and history views usable when the aria2 engine is unavailable but Telegram downloads are available.
+- Included active Telegram transfers in the app-wide download speed and Dock progress.
+
+### Fixed
+
+- Preserved the exact directory selected in the new-task sheet and showed the resolved save path on Telegram task rows.
 
 ## 0.2.0 - 2026-07-15
 

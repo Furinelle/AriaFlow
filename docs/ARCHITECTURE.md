@@ -29,7 +29,7 @@ AppStore ──────► Dock / notifications / local persistence
 | `Views.swift` | Main window, task/history views, sheets and settings |
 | `MenuBarViews.swift` | Menu bar label, menu actions and startup bootstrap |
 | `Models.swift` | `AppStore`, persisted settings, task/history models and orchestration |
-| `TelegramDownloadService.swift` | Telegram message-link validation, `tdl` discovery, safe argument construction and process lifecycle |
+| `TelegramDownloadService.swift` | Telegram message-link validation, `tdl` discovery, safe argument construction, stdout progress parsing and process lifecycle |
 | `Aria2Client.swift` | Typed JSON-RPC request and response layer |
 | `EngineManager.swift` | Engine discovery, process launch, logs and peer blocklist validation |
 | `DockService.swift` | Dock badge and aggregate progress |
@@ -83,7 +83,7 @@ Torrent file bytes → Base64 → `aria2.addTorrent` with `pause=true` → file 
 
 `AddTaskSheet` → `TelegramMessageLink` validation → `AppStore.addTelegramTask()` → serial Telegram queue → `TelegramDownloadService` → system `tdl dl` process.
 
-`tdl` is an optional external dependency and is never bundled. The service searches `ARIAFLOW_TDL_PATH`, common Homebrew locations and `PATH`, then invokes the executable directly without a shell. It uses the user's existing local `tdl` session, enables non-interactive resume and grouped-message discovery, and keeps downloaded files when a task record is removed. Telegram task records are in-memory; completed outcomes are added to `history.json`.
+`tdl` is an optional external dependency and is never bundled. The service searches `ARIAFLOW_TDL_PATH`, common Homebrew locations and `PATH`, then invokes the executable directly without a shell. It uses the user's existing local `tdl` session, enables non-interactive resume and grouped-message discovery, streams progress from stdout into `AppStore`, and keeps downloaded files when a task record is removed. `AppStore` combines active tdl speeds with aria2 global stats for the status bar and updates each Telegram task's percentage, downloaded size, estimated total, speed and ETA. Telegram task records are in-memory; completed outcomes are added to `history.json`.
 
 ### Engine settings
 

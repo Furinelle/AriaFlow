@@ -196,9 +196,15 @@ enum TaskSort: String, CaseIterable, Identifiable {
     }
 }
 
+enum DownloadBackend: String, Hashable {
+    case aria2
+    case telegram
+}
+
 struct DownloadTask: Identifiable, Hashable {
     var name: String
     var protocolLabel: String
+    var backend: DownloadBackend
     var status: TaskStatus
     var progress: Double
     var completedSize: String
@@ -343,6 +349,7 @@ final class AppStore: ObservableObject {
     @Published var fileCandidates: [FileCandidate] = []
 
     @Published var tasks: [DownloadTask] = []
+    @Published private(set) var telegramTasks: [DownloadTask] = []
 
     @Published var history: [HistoryItem] {
         didSet {
@@ -354,6 +361,7 @@ final class AppStore: ObservableObject {
     private var pollingTask: Task<Void, Never>?
     private var pendingEngineRestartTask: Task<Void, Never>?
     private let engineManager = EngineManager()
+    private let telegramDownloadService = TelegramDownloadService()
     private let notificationService = NotificationService()
     private let dockService = DockService()
     private var knownTaskStatuses: [String: TaskStatus] = [:]
@@ -399,21 +407,45 @@ final class AppStore: ObservableObject {
 
     var selectedTask: DownloadTask? {
         guard let selectedTaskID else { return nil }
-        return tasks.first { $0.id == selectedTaskID }
+        return allTasks.first { $0.id == selectedTaskID }
+    }
+
+    private var allTasks: [DownloadTask] {
+        tasks + telegramTasks
+    }
+
+    var hasTasks: Bool {
+        !allTasks.isEmpty
+    }
+
+    var isTDLAvailable: Bool {
+        telegramDownloadService.isAvailable
+    }
+
+    var tdlStatusMessage: String {
+        if let path = telegramDownloadService.executablePath {
+            return "已找到：\(path)"
+        }
+        return "未安装 tdl；请运行 brew install telegram-downloader"
+    }
+
+    var canDeleteSelectedFiles: Bool {
+        guard let selectedTask else { return false }
+        return selectedTask.backend == .aria2
     }
 
     var filteredTasks: [DownloadTask] {
         let baseTasks: [DownloadTask] = switch selectedFilter {
         case .all:
-            tasks
+            allTasks
         case .active:
-            tasks.filter { $0.status == .active }
+            allTasks.filter { $0.status == .active }
         case .waiting:
-            tasks.filter { $0.status == .waiting || $0.status == .paused }
+            allTasks.filter { $0.status == .waiting || $0.status == .paused }
         case .complete:
-            tasks.filter { $0.status == .complete }
+            allTasks.filter { $0.status == .complete }
         case .failed:
-            tasks.filter { $0.status == .failed }
+            allTasks.filter { $0.status == .failed }
         case .history:
             []
         }
@@ -448,20 +480,20 @@ final class AppStore: ObservableObject {
         selectedTask?.status.canResume == true
     }
 
-    var activeCount: Int { tasks.filter { $0.status == .active }.count }
-    var waitingCount: Int { tasks.filter { $0.status == .waiting || $0.status == .paused }.count }
-    var completeCount: Int { tasks.filter { $0.status == .complete }.count }
-    var failedCount: Int { tasks.filter { $0.status == .failed }.count }
+    var activeCount: Int { allTasks.filter { $0.status == .active }.count }
+    var waitingCount: Int { allTasks.filter { $0.status == .waiting || $0.status == .paused }.count }
+    var completeCount: Int { allTasks.filter { $0.status == .complete }.count }
+    var failedCount: Int { allTasks.filter { $0.status == .failed }.count }
 
     var activeProgress: Double {
-        let activeTasks = tasks.filter { $0.status == .active }
+        let activeTasks = allTasks.filter { $0.status == .active }
         guard !activeTasks.isEmpty else { return 0 }
         return activeTasks.map(\.progress).reduce(0, +) / Double(activeTasks.count)
     }
 
     func count(for filter: TaskFilter) -> Int {
         switch filter {
-        case .all: tasks.count
+        case .all: allTasks.count
         case .active: activeCount
         case .waiting: waitingCount
         case .complete: completeCount
@@ -477,6 +509,18 @@ final class AppStore: ObservableObject {
 
     func pauseSelected() async {
         guard let selectedTask else { return }
+        if selectedTask.backend == .telegram {
+            if let index = telegramTasks.firstIndex(where: { $0.id == selectedTask.id }) {
+                telegramTasks[index].status = .paused
+                telegramTasks[index].downloadSpeed = "0 B/s"
+                telegramTasks[index].remainingTime = "--"
+                telegramTasks[index].detail = "Telegram 下载已暂停；继续时会由 tdl 断点续传。"
+            }
+            telegramDownloadService.terminate(id: selectedTask.id)
+            updateDockBadge()
+            return
+        }
+
         do {
             _ = try await makeClient().pause(gid: selectedTask.gid)
             await refreshTasksFromEngine()
@@ -487,6 +531,11 @@ final class AppStore: ObservableObject {
 
     func resumeSelected() async {
         guard let selectedTask else { return }
+        if selectedTask.backend == .telegram {
+            startTelegramDownload(taskID: selectedTask.id)
+            return
+        }
+
         do {
             _ = try await makeClient().unpause(gid: selectedTask.gid)
             await refreshTasksFromEngine()
@@ -496,20 +545,42 @@ final class AppStore: ObservableObject {
     }
 
     func pauseAll() async {
-        do {
-            _ = try await makeClient().pauseAll()
-            await refreshTasksFromEngine()
-        } catch {
-            handleRPCError(error)
+        for index in telegramTasks.indices
+        where telegramTasks[index].status == .active || telegramTasks[index].status == .waiting {
+            if telegramTasks[index].status == .active {
+                telegramDownloadService.terminate(id: telegramTasks[index].id)
+            }
+            telegramTasks[index].status = .paused
+            telegramTasks[index].downloadSpeed = "0 B/s"
+            telegramTasks[index].remainingTime = "--"
         }
+
+        if connectionState == .connected {
+            do {
+                _ = try await makeClient().pauseAll()
+                await refreshTasksFromEngine()
+            } catch {
+                handleRPCError(error)
+            }
+        }
+        updateDockBadge()
     }
 
     func resumeAll() async {
-        do {
-            _ = try await makeClient().unpauseAll()
-            await refreshTasksFromEngine()
-        } catch {
-            handleRPCError(error)
+        let telegramTaskIDs = telegramTasks
+            .filter { $0.status == .paused || $0.status == .waiting }
+            .map(\.id)
+        for id in telegramTaskIDs {
+            startTelegramDownload(taskID: id)
+        }
+
+        if connectionState == .connected {
+            do {
+                _ = try await makeClient().unpauseAll()
+                await refreshTasksFromEngine()
+            } catch {
+                handleRPCError(error)
+            }
         }
     }
 
@@ -560,6 +631,7 @@ final class AppStore: ObservableObject {
         stopPolling()
         pendingEngineRestartTask?.cancel()
         pendingEngineRestartTask = nil
+        telegramDownloadService.stopAll()
         engineManager.stop()
         connectionState = .stopped
         engineMessage = "下载引擎已停止"
@@ -591,8 +663,27 @@ final class AppStore: ObservableObject {
     }
 
     func clearStoppedResults() async {
+        let removableTelegramTasks = telegramTasks.filter { $0.status == .complete || $0.status == .failed }
+        for task in removableTelegramTasks {
+            addHistoryItem(
+                HistoryItem(
+                    gid: task.gid,
+                    name: task.name,
+                    result: "已清理结果",
+                    finishedAt: Self.currentTimeText(),
+                    location: task.savePath
+                )
+            )
+        }
+        let removableTelegramIDs = Set(removableTelegramTasks.map(\.id))
+        telegramTasks.removeAll { removableTelegramIDs.contains($0.id) }
+
         let removableTasks = tasks.filter { $0.status == .complete || $0.status == .failed }
-        guard !removableTasks.isEmpty else { return }
+        guard !removableTasks.isEmpty else {
+            selectedTaskID = allTasks.first?.id
+            updateDockBadge()
+            return
+        }
 
         do {
             let client = makeClient()
@@ -627,6 +718,23 @@ final class AppStore: ObservableObject {
 
     func deleteSelected(deleteFiles: Bool) async {
         guard let task = selectedTask else { return }
+        if task.backend == .telegram {
+            telegramDownloadService.terminate(id: task.id)
+            telegramTasks.removeAll { $0.id == task.id }
+            addHistoryItem(
+                HistoryItem(
+                    gid: task.gid,
+                    name: task.name,
+                    result: "已移除任务",
+                    finishedAt: Self.currentTimeText(),
+                    location: task.savePath
+                )
+            )
+            selectedTaskID = allTasks.first?.id
+            updateDockBadge()
+            return
+        }
+
         do {
             let client = makeClient()
             if task.status == .complete || task.status == .failed {
@@ -741,6 +849,7 @@ final class AppStore: ObservableObject {
     }
 
     func deleteFileTargets(for task: DownloadTask) -> [String] {
+        guard task.backend == .aria2 else { return [] }
         let rawPaths = task.localFilePaths
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
@@ -866,6 +975,165 @@ final class AppStore: ObservableObject {
         } catch {
             handleRPCError(error)
         }
+    }
+
+    func addTelegramTask(urlText: String, downloadDirectory: String? = nil) async {
+        do {
+            let links = try urlText
+                .components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .map(TelegramMessageLink.init(parsing:))
+            guard !links.isEmpty else {
+                throw TelegramDownloadError.noLinks
+            }
+
+            let destination = resolvedDownloadDirectory(downloadDirectory)
+            let id = "tdl-\(UUID().uuidString.lowercased())"
+            let name = links.count == 1 ? links[0].displayName : "Telegram 批量下载（\(links.count) 条）"
+            let task = DownloadTask(
+                name: name,
+                protocolLabel: "Telegram / tdl",
+                backend: .telegram,
+                status: .waiting,
+                progress: 0,
+                completedSize: "--",
+                totalSize: "--",
+                downloadSpeed: "--",
+                uploadSpeed: "0 B/s",
+                remainingTime: "等待启动",
+                savePath: destination,
+                gid: id,
+                detail: "由本机 tdl 直接从 Telegram 下载，不经过 Telegram 客户端缓存。",
+                errorMessage: nil,
+                fileNames: [],
+                localFilePaths: [],
+                sourceURLs: links.map(\.absoluteString),
+                infoHash: nil,
+                ed2kHash: nil
+            )
+
+            telegramTasks.insert(task, at: 0)
+            selectedFilter = .all
+            selectedTaskID = id
+            showAddTask = false
+            startTelegramDownload(taskID: id)
+        } catch {
+            engineMessage = error.localizedDescription
+        }
+    }
+
+    private func startTelegramDownload(taskID: String) {
+        guard let index = telegramTasks.firstIndex(where: { $0.id == taskID }) else { return }
+
+        guard !telegramDownloadService.hasRunningProcesses else {
+            telegramTasks[index].status = .waiting
+            telegramTasks[index].downloadSpeed = "0 B/s"
+            telegramTasks[index].remainingTime = "等待 tdl"
+            telegramTasks[index].detail = "另一个 Telegram 下载完成后会自动开始。"
+            return
+        }
+
+        do {
+            let links = try telegramTasks[index].sourceURLs.map(TelegramMessageLink.init(parsing:))
+            let destination = telegramTasks[index].savePath
+            telegramTasks[index].status = .active
+            telegramTasks[index].progress = 0
+            telegramTasks[index].downloadSpeed = "tdl"
+            telegramTasks[index].remainingTime = "下载中"
+            telegramTasks[index].errorMessage = nil
+            telegramTasks[index].detail = "tdl 正在直接下载 Telegram 视频或媒体。"
+            updateDockBadge()
+
+            try telegramDownloadService.start(
+                id: taskID,
+                links: links,
+                downloadDirectory: destination
+            ) { [weak self] result in
+                self?.finishTelegramDownload(taskID: taskID, result: result)
+            }
+        } catch {
+            finishTelegramDownload(taskID: taskID, result: .failed(error.localizedDescription))
+        }
+    }
+
+    private func finishTelegramDownload(taskID: String, result: TDLRunResult) {
+        guard let index = telegramTasks.firstIndex(where: { $0.id == taskID }) else {
+            startNextTelegramDownload()
+            return
+        }
+
+        switch result {
+        case .cancelled:
+            if telegramTasks[index].status == .active {
+                telegramTasks[index].status = .paused
+                telegramTasks[index].downloadSpeed = "0 B/s"
+                telegramTasks[index].remainingTime = "--"
+            }
+            updateDockBadge()
+            startNextTelegramDownload()
+            return
+
+        case .completed:
+            telegramTasks[index].status = .complete
+            telegramTasks[index].progress = 1
+            telegramTasks[index].downloadSpeed = "0 B/s"
+            telegramTasks[index].remainingTime = "已完成"
+            telegramTasks[index].detail = "tdl 已将 Telegram 内容保存到指定目录。"
+            telegramTasks[index].errorMessage = nil
+            notificationService.send(title: "Telegram 下载完成", body: telegramTasks[index].name)
+            addHistoryItem(
+                HistoryItem(
+                    gid: taskID,
+                    name: telegramTasks[index].name,
+                    result: "已完成",
+                    finishedAt: Self.currentTimeText(),
+                    location: telegramTasks[index].savePath
+                )
+            )
+
+        case .failed(let rawMessage):
+            let message = telegramErrorMessage(rawMessage)
+            telegramTasks[index].status = .failed
+            telegramTasks[index].downloadSpeed = "0 B/s"
+            telegramTasks[index].remainingTime = "失败"
+            telegramTasks[index].detail = "tdl 未能完成 Telegram 下载。"
+            telegramTasks[index].errorMessage = message
+            notificationService.send(title: "Telegram 下载失败", body: telegramTasks[index].name)
+            addHistoryItem(
+                HistoryItem(
+                    gid: taskID,
+                    name: telegramTasks[index].name,
+                    result: "已失败",
+                    finishedAt: Self.currentTimeText(),
+                    location: message
+                )
+            )
+        }
+
+        updateDockBadge()
+        startNextTelegramDownload()
+    }
+
+    private func startNextTelegramDownload() {
+        guard !telegramDownloadService.hasRunningProcesses,
+              let nextIndex = telegramTasks.lastIndex(where: { $0.status == .waiting }) else {
+            return
+        }
+        startTelegramDownload(taskID: telegramTasks[nextIndex].id)
+    }
+
+    private func telegramErrorMessage(_ rawMessage: String) -> String {
+        let lowercased = rawMessage.lowercased()
+        if lowercased.contains("not logged")
+            || lowercased.contains("auth")
+            || lowercased.contains("login") {
+            return "tdl 尚未登录，请在终端运行 tdl login -T qr。"
+        }
+        if rawMessage.isEmpty {
+            return TelegramDownloadError.processFailed("").localizedDescription
+        }
+        return TelegramDownloadError.processFailed(rawMessage).localizedDescription
     }
 
     func addTorrentTask(fileURL: URL, splitCount: Int, downloadDirectory: String? = nil) async {
@@ -1024,7 +1292,7 @@ final class AppStore: ObservableObject {
         let refreshedTasks = (activeTasks + waitingTasks + stoppedTasks).map(Self.makeDownloadTask)
         notifyTaskChanges(refreshedTasks)
         tasks = refreshedTasks
-        selectedTaskID = tasks.contains { $0.id == previousSelection } ? previousSelection : tasks.first?.id
+        selectedTaskID = allTasks.contains { $0.id == previousSelection } ? previousSelection : allTasks.first?.id
         updateDockBadge()
     }
 
@@ -1045,6 +1313,7 @@ final class AppStore: ObservableObject {
         return DownloadTask(
             name: name,
             protocolLabel: task.bittorrent == nil ? "RPC" : "BT",
+            backend: .aria2,
             status: status,
             progress: totalBytes > 0 ? Double(completedBytes) / Double(totalBytes) : 0,
             completedSize: formatBytes(completedBytes),

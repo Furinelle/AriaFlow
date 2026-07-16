@@ -50,7 +50,7 @@ struct AriaFlowMenuBarView: View {
             store.showAddTask = true
             showMainWindow()
         }
-        .disabled(store.connectionState != .connected)
+        .disabled(store.connectionState != .connected && !store.isTDLAvailable)
 
         Button("设置...") {
             AppPresentation.showSettings(using: openSettings)
@@ -63,14 +63,14 @@ struct AriaFlowMenuBarView: View {
                 await store.resumeAll()
             }
         }
-        .disabled(store.connectionState != .connected || store.waitingCount == 0)
+        .disabled(store.waitingCount == 0)
 
         Button("暂停全部") {
             Task {
                 await store.pauseAll()
             }
         }
-        .disabled(store.connectionState != .connected || store.activeCount == 0)
+        .disabled(store.activeCount == 0)
 
         Button("保存会话") {
             Task {
@@ -84,7 +84,7 @@ struct AriaFlowMenuBarView: View {
                 await store.clearStoppedResults()
             }
         }
-        .disabled(store.connectionState != .connected || (store.completeCount + store.failedCount) == 0)
+        .disabled((store.completeCount + store.failedCount) == 0)
 
         Divider()
 

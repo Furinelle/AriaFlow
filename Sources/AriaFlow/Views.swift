@@ -22,7 +22,7 @@ struct MainWindowView: View {
                 } label: {
                     Label("添加", systemImage: "plus")
                 }
-                .disabled(store.connectionState != .connected)
+                .disabled(store.connectionState != .connected && !store.isTDLAvailable)
                 .help("添加任务")
 
                 Button {
@@ -32,7 +32,7 @@ struct MainWindowView: View {
                 } label: {
                     Label("继续", systemImage: "play.fill")
                 }
-                .disabled(store.connectionState != .connected || !store.canResumeSelected)
+                .disabled(!store.canResumeSelected)
                 .help("继续选中的任务")
 
                 Button {
@@ -42,7 +42,7 @@ struct MainWindowView: View {
                 } label: {
                     Label("暂停", systemImage: "pause.fill")
                 }
-                .disabled(store.connectionState != .connected || !store.canPauseSelected)
+                .disabled(!store.canPauseSelected)
                 .help("暂停选中的任务")
 
                 Button {
@@ -50,7 +50,7 @@ struct MainWindowView: View {
                 } label: {
                     Label("删除", systemImage: "trash")
                 }
-                .disabled(store.connectionState != .connected || store.selectedTask == nil)
+                .disabled(store.selectedTask == nil)
                 .help("删除选中的任务")
 
                 Button {
@@ -146,48 +146,51 @@ struct ContentAreaView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Group {
-                switch store.connectionState {
-                case .starting:
-                    ConnectionStateView(
-                        title: "正在连接",
-                        message: "正在启动 aria2-next 引擎",
-                        symbol: "hourglass",
-                        primaryActionTitle: nil,
-                        secondaryActionTitle: nil
-                    )
-                case .failed:
-                    ConnectionStateView(
-                        title: "无法连接",
-                        message: "请重试连接或检查引擎设置。",
-                        symbol: "wifi.slash",
-                        primaryActionTitle: "重试连接",
-                        secondaryActionTitle: "打开设置"
-                    )
-                case .stopped:
-                    ConnectionStateView(
-                        title: "引擎已停止",
-                        message: "下载引擎没有运行",
-                        symbol: "stop.circle",
-                        primaryActionTitle: "重新连接",
-                        secondaryActionTitle: "打开设置"
-                    )
-                case .connected:
-                    if store.selectedFilter == .history {
-                        HistoryListView()
-                    } else if store.filteredTasks.isEmpty && store.taskSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        EmptyTaskView()
-                    } else {
-                        TaskListView()
-                    }
-                }
-            }
+            content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             Divider()
             StatusBarView()
         }
         .navigationTitle(store.selectedFilter.title)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if store.selectedFilter == .history {
+            HistoryListView()
+        } else if store.hasTasks || !store.taskSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            TaskListView()
+        } else {
+            switch store.connectionState {
+            case .starting:
+                ConnectionStateView(
+                    title: "正在连接",
+                    message: "正在启动 aria2-next 引擎；Telegram 下载仍可使用 tdl 添加。",
+                    symbol: "hourglass",
+                    primaryActionTitle: nil,
+                    secondaryActionTitle: nil
+                )
+            case .failed:
+                ConnectionStateView(
+                    title: "aria2 无法连接",
+                    message: "可以重试 aria2，或直接添加 Telegram 消息链接交给 tdl 下载。",
+                    symbol: "wifi.slash",
+                    primaryActionTitle: "重试连接",
+                    secondaryActionTitle: "打开设置"
+                )
+            case .stopped:
+                ConnectionStateView(
+                    title: "aria2 引擎已停止",
+                    message: "普通链接和 Torrent 暂不可用；Telegram 下载仍可使用 tdl。",
+                    symbol: "stop.circle",
+                    primaryActionTitle: "重新连接",
+                    secondaryActionTitle: "打开设置"
+                )
+            case .connected:
+                EmptyTaskView()
+            }
+        }
     }
 }
 
@@ -246,7 +249,7 @@ struct EmptyTaskView: View {
             Text("没有下载任务")
                 .font(.title2.bold())
 
-            Text("添加链接或打开 torrent 文件")
+            Text("添加普通链接、Telegram 消息链接或打开 torrent 文件")
                 .foregroundStyle(.secondary)
 
             Button("添加任务") {
@@ -283,7 +286,7 @@ struct TaskListView: View {
                         await store.clearStoppedResults()
                     }
                 }
-                .disabled(store.connectionState != .connected || (store.completeCount + store.failedCount) == 0)
+                .disabled((store.completeCount + store.failedCount) == 0)
             }
             .padding(.horizontal, 14)
             .frame(height: 42)
@@ -415,8 +418,14 @@ struct TaskRowView: View {
             }
 
             HStack(spacing: 10) {
-                ProgressView(value: task.progress)
-                    .tint(task.status.color)
+                if task.backend == .telegram && task.status == .active {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(task.status.color)
+                } else {
+                    ProgressView(value: task.progress)
+                        .tint(task.status.color)
+                }
 
                 Text("↓ \(task.downloadSpeed)")
                     .font(.caption.monospacedDigit())
@@ -426,10 +435,14 @@ struct TaskRowView: View {
 
             HStack {
                 Text(task.remainingTime)
-                Text("\(Int(task.progress * 100))%")
-                Text("\(task.completedSize) / \(task.totalSize)")
+                if task.backend == .telegram {
+                    Text("由 tdl 直接下载")
+                } else {
+                    Text("\(Int(task.progress * 100))%")
+                    Text("\(task.completedSize) / \(task.totalSize)")
+                }
                 Spacer()
-                if task.uploadSpeed != "0 KB/s" {
+                if task.backend == .aria2 && task.uploadSpeed != "0 KB/s" {
                     Text("↑ \(task.uploadSpeed)")
                 }
                 TaskRowActions(task: task)
@@ -702,6 +715,7 @@ struct AddTaskSheet: View {
     @EnvironmentObject private var store: AppStore
     @State private var tab = "url"
     @State private var urlText = ""
+    @State private var telegramURLText = ""
     @State private var fileName = ""
     @State private var downloadDirectory = ""
     @State private var splitCount = 64
@@ -723,6 +737,25 @@ struct AddTaskSheet: View {
             .components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { isSupportedURL($0) }
+    }
+
+    private var hasTelegramInput: Bool {
+        !parsedTelegramURLs.isEmpty
+    }
+
+    private var hasInvalidTelegramInput: Bool {
+        let lines = telegramURLText
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return !lines.isEmpty && lines.count != parsedTelegramURLs.count
+    }
+
+    private var parsedTelegramURLs: [String] {
+        telegramURLText
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { (try? TelegramMessageLink(parsing: $0)) != nil }
     }
 
     var body: some View {
@@ -760,7 +793,7 @@ struct AddTaskSheet: View {
                 Text("新建任务")
                     .font(.title3.weight(.semibold))
 
-                Text(tab == "url" ? "添加链接、磁力或 ED2K 下载" : "导入 torrent 并选择文件")
+                Text(headerDescription)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -769,11 +802,20 @@ struct AddTaskSheet: View {
 
             Picker("任务类型", selection: $tab) {
                 Text("链接").tag("url")
+                Text("Telegram").tag("telegram")
                 Text("Torrent").tag("torrent")
             }
             .labelsHidden()
             .pickerStyle(.segmented)
-            .frame(width: 196)
+            .frame(width: 286)
+        }
+    }
+
+    private var headerDescription: String {
+        switch tab {
+        case "telegram": "使用本机 tdl 直接下载 Telegram 视频或媒体"
+        case "torrent": "导入 torrent 并选择文件"
+        default: "添加链接、磁力或 ED2K 下载"
         }
     }
 
@@ -781,6 +823,8 @@ struct AddTaskSheet: View {
     private var taskForm: some View {
         if tab == "url" {
             urlTaskForm
+        } else if tab == "telegram" {
+            telegramTaskForm
         } else {
             torrentTaskForm
         }
@@ -865,6 +909,45 @@ struct AddTaskSheet: View {
         }
     }
 
+    private var telegramTaskForm: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            glassPanel {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .center) {
+                        Label("Telegram 消息链接", systemImage: "paperplane")
+                            .font(.headline)
+
+                        Spacer()
+
+                        Button {
+                            pasteTelegramURLText()
+                        } label: {
+                            Label("粘贴", systemImage: "doc.on.clipboard")
+                        }
+                        .ariaFlowGlassButtonStyle()
+                        .controlSize(.small)
+                    }
+
+                    telegramURLEditor
+
+                    if hasInvalidTelegramInput {
+                        Label("请粘贴具体消息链接，例如 https://t.me/channel/123。", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+
+                    Label(store.tdlStatusMessage, systemImage: store.isTDLAvailable ? "checkmark.circle.fill" : "xmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(store.isTDLAvailable ? .green : .red)
+                }
+            }
+
+            glassPanel {
+                directoryRow
+            }
+        }
+    }
+
     private var urlEditor: some View {
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 8)
@@ -892,6 +975,33 @@ struct AddTaskSheet: View {
         }
     }
 
+    private var telegramURLEditor: some View {
+        ZStack(alignment: .topLeading) {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.clear)
+
+            TextEditor(text: $telegramURLText)
+                .font(.callout.monospaced())
+                .scrollContentBackground(.hidden)
+                .padding(8)
+
+            if telegramURLText.isEmpty {
+                Text("https://t.me/channel/123")
+                    .font(.callout.monospaced())
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, 13)
+                    .allowsHitTesting(false)
+            }
+        }
+        .frame(height: 104)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(hasInvalidTelegramInput ? Color.red.opacity(0.7) : Color(nsColor: .separatorColor).opacity(0.65), lineWidth: 1)
+        }
+    }
+
     @ViewBuilder
     private func glassPanel<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         if #available(macOS 26.0, *) {
@@ -914,7 +1024,7 @@ struct AddTaskSheet: View {
 
     private var footer: some View {
         HStack(spacing: 12) {
-            Text(tab == "url" ? "\(parsedURLs.count) 个有效链接" : "选择 torrent 后会读取文件列表")
+            Text(footerDescription)
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -935,6 +1045,18 @@ struct AddTaskSheet: View {
                 .ariaFlowGlassButtonStyle(prominent: true)
                 .keyboardShortcut(.defaultAction)
                 .disabled(!hasURLInput || hasInvalidURLInput)
+            } else if tab == "telegram" {
+                Button("使用 tdl 下载") {
+                    Task {
+                        await store.addTelegramTask(
+                            urlText: parsedTelegramURLs.joined(separator: "\n"),
+                            downloadDirectory: downloadDirectory
+                        )
+                    }
+                }
+                .ariaFlowGlassButtonStyle(prominent: true)
+                .keyboardShortcut(.defaultAction)
+                .disabled(!hasTelegramInput || hasInvalidTelegramInput || !store.isTDLAvailable)
             } else {
                 Button("选择 Torrent...") {
                     chooseTorrentFile()
@@ -942,6 +1064,14 @@ struct AddTaskSheet: View {
                 .ariaFlowGlassButtonStyle(prominent: true)
                 .keyboardShortcut(.defaultAction)
             }
+        }
+    }
+
+    private var footerDescription: String {
+        switch tab {
+        case "telegram": "\(parsedTelegramURLs.count) 个 Telegram 消息链接"
+        case "torrent": "选择 torrent 后会读取文件列表"
+        default: "\(parsedURLs.count) 个有效链接"
         }
     }
 
@@ -1021,7 +1151,16 @@ struct AddTaskSheet: View {
         }
     }
 
+    private func pasteTelegramURLText() {
+        if let text = NSPasteboard.general.string(forType: .string) {
+            telegramURLText = text
+        }
+    }
+
     private func isSupportedURL(_ value: String) -> Bool {
+        if (try? TelegramMessageLink(parsing: value)) != nil {
+            return false
+        }
         let lowercased = value.lowercased()
         return lowercased.hasPrefix("http://")
             || lowercased.hasPrefix("https://")
@@ -1304,6 +1443,32 @@ struct SettingsWindowView: View {
                         chooseDirectoryButton
                     }
                 }
+            }
+
+            settingsPanel(
+                title: "Telegram 下载",
+                subtitle: "AriaFlow 直接调用本机 tdl，不会先把媒体下载到 Telegram 客户端缓存。",
+                symbol: "paperplane"
+            ) {
+                settingsRow("tdl 状态", detail: nil) {
+                    Label(
+                        store.isTDLAvailable ? "可用" : "未安装",
+                        systemImage: store.isTDLAvailable ? "checkmark.circle.fill" : "xmark.circle.fill"
+                    )
+                    .foregroundStyle(store.isTDLAvailable ? .green : .red)
+                }
+
+                Text(store.tdlStatusMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text("首次使用请在终端运行：tdl login -T qr")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             settingsPanel(title: "队列与速度", symbol: "speedometer") {
@@ -1718,7 +1883,13 @@ struct DeleteConfirmationSheet: View {
             Text("这会从 AriaFlow 中移除选中的任务。已下载的文件默认会保留在磁盘上。")
                 .foregroundStyle(.secondary)
 
-            Toggle("同时删除本地文件", isOn: $deleteFiles)
+            if store.canDeleteSelectedFiles {
+                Toggle("同时删除本地文件", isOn: $deleteFiles)
+            } else {
+                Label("tdl 输出文件会保留；这里只移除任务记录。", systemImage: "folder.badge.checkmark")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             if deleteFiles {
                 let targets = store.selectedTask.map { store.deleteFileTargets(for: $0) } ?? []

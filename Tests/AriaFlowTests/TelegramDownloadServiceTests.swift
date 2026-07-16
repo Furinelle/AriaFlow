@@ -52,6 +52,28 @@ struct TelegramDownloadServiceTests {
         #expect(command.workingDirectoryURL.path == ("~/Downloads/Telegram" as NSString).expandingTildeInPath)
     }
 
+    @Test("rejects an empty tdl command")
+    func rejectsEmptyTDLCommand() throws {
+        let executable = URL(fileURLWithPath: "/opt/homebrew/bin/tdl")
+
+        #expect(throws: TelegramDownloadError.self) {
+            try TDLCommandBuilder.make(
+                executableURL: executable,
+                links: [],
+                downloadDirectory: "~/Downloads/Telegram"
+            )
+        }
+
+        let link = try TelegramMessageLink(parsing: "https://t.me/telegram/193")
+        #expect(throws: TelegramDownloadError.self) {
+            try TDLCommandBuilder.make(
+                executableURL: executable,
+                links: [link],
+                downloadDirectory: "   "
+            )
+        }
+    }
+
     @Test("discovers an executable supplied through the environment")
     func findsEnvironmentOverride() throws {
         let directory = FileManager.default.temporaryDirectory

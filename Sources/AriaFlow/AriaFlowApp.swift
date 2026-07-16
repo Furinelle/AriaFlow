@@ -29,7 +29,7 @@ struct AriaFlowApp: App {
                 Button("新建任务...") {
                     store.showAddTask = true
                 }
-                .disabled(store.connectionState != .connected)
+                .disabled(store.connectionState != .connected && !store.isTDLAvailable)
                 .keyboardShortcut("n")
 
                 Button("打开 Torrent...") {
@@ -55,14 +55,14 @@ struct AriaFlowApp: App {
                         await store.resumeSelected()
                     }
                 }
-                .disabled(store.connectionState != .connected || !store.canResumeSelected)
+                .disabled(!store.canResumeSelected)
 
                 Button("暂停") {
                     Task {
                         await store.pauseSelected()
                     }
                 }
-                .disabled(store.connectionState != .connected || !store.canPauseSelected)
+                .disabled(!store.canPauseSelected)
 
                 Divider()
 
@@ -71,14 +71,14 @@ struct AriaFlowApp: App {
                         await store.resumeAll()
                     }
                 }
-                .disabled(store.connectionState != .connected || store.waitingCount == 0)
+                .disabled(store.waitingCount == 0)
 
                 Button("暂停全部") {
                     Task {
                         await store.pauseAll()
                     }
                 }
-                .disabled(store.connectionState != .connected || store.activeCount == 0)
+                .disabled(store.activeCount == 0)
 
                 Divider()
 
@@ -94,14 +94,14 @@ struct AriaFlowApp: App {
                         await store.clearStoppedResults()
                     }
                 }
-                .disabled(store.connectionState != .connected || (store.completeCount + store.failedCount) == 0)
+                .disabled((store.completeCount + store.failedCount) == 0)
 
                 Divider()
 
                 Button("删除...") {
                     store.showDeleteConfirmation = true
                 }
-                .disabled(store.connectionState != .connected || store.selectedTask == nil)
+                .disabled(store.selectedTask == nil)
             }
         }
 

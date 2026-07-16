@@ -9,12 +9,12 @@ SwiftUI views
     │
     ▼
 AppStore ──────► Dock / notifications / local persistence
+    ├──────────► TelegramDownloadService ─► system tdl ─► Telegram
     │
-    ▼
-Aria2Client ───► local JSON-RPC
-    │
-    ▼
-EngineManager ─► bundled aria2-next or system aria2
+    └──────────► Aria2Client ───► local JSON-RPC
+                      │
+                      ▼
+                EngineManager ─► bundled aria2-next or system aria2
 ```
 
 `AppStore` is the application state owner. Views mutate it directly or start short `Task` blocks for RPC operations.
@@ -29,6 +29,7 @@ EngineManager ─► bundled aria2-next or system aria2
 | `Views.swift` | Main window, task/history views, sheets and settings |
 | `MenuBarViews.swift` | Menu bar label, menu actions and startup bootstrap |
 | `Models.swift` | `AppStore`, persisted settings, task/history models and orchestration |
+| `TelegramDownloadService.swift` | Telegram message-link validation, `tdl` discovery, safe argument construction and process lifecycle |
 | `Aria2Client.swift` | Typed JSON-RPC request and response layer |
 | `EngineManager.swift` | Engine discovery, process launch, logs and peer blocklist validation |
 | `DockService.swift` | Dock badge and aggregate progress |
@@ -78,6 +79,12 @@ Magnet tasks start paused until metadata and file selection are available.
 
 Torrent file bytes → Base64 → `aria2.addTorrent` with `pause=true` → file selection → `aria2.changeOption(select-file)` → unpause.
 
+### Telegram task
+
+`AddTaskSheet` → `TelegramMessageLink` validation → `AppStore.addTelegramTask()` → serial Telegram queue → `TelegramDownloadService` → system `tdl dl` process.
+
+`tdl` is an optional external dependency and is never bundled. The service searches `ARIAFLOW_TDL_PATH`, common Homebrew locations and `PATH`, then invokes the executable directly without a shell. It uses the user's existing local `tdl` session, enables non-interactive resume and grouped-message discovery, and keeps downloaded files when a task record is removed. Telegram task records are in-memory; completed outcomes are added to `history.json`.
+
 ### Engine settings
 
 - Runtime-compatible limits use `aria2.changeGlobalOption`.
@@ -108,6 +115,7 @@ Window activation and Dock visibility must remain centralized in `AppPresentatio
 - Add RPC methods in `Aria2Client`; keep transport details out of views.
 - Add persisted preferences to `AppSettings` with decode defaults.
 - Put engine arguments and executable discovery in `EngineManager`.
+- Keep external `tdl` discovery, argument construction and process handling in `TelegramDownloadService`.
 - Keep application orchestration in `AppStore`; views should only bind state and trigger actions.
 - Update `THIRD_PARTY_NOTICES.md` and both checksums when replacing sidecars.
 - Add one focused test or smoke assertion for non-trivial parsing, state or RPC behavior.

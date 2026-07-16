@@ -365,6 +365,9 @@ final class AppStore: ObservableObject {
     private let notificationService = NotificationService()
     private let dockService = DockService()
     private var knownTaskStatuses: [String: TaskStatus] = [:]
+    private var ariaDownloadSpeedBytes: Int64 = 0
+    private var ariaUploadSpeedBytes: Int64 = 0
+    private var telegramDownloadSpeeds: [String: Int64] = [:]
     private var activeRPCPort: Int?
     private var activeRPCToken: String?
 
@@ -516,6 +519,8 @@ final class AppStore: ObservableObject {
                 telegramTasks[index].remainingTime = "--"
                 telegramTasks[index].detail = "Telegram 下载已暂停；继续时会由 tdl 断点续传。"
             }
+            telegramDownloadSpeeds[selectedTask.id] = nil
+            updateTransferSpeedTexts()
             telegramDownloadService.terminate(id: selectedTask.id)
             updateDockBadge()
             return
@@ -550,10 +555,12 @@ final class AppStore: ObservableObject {
             if telegramTasks[index].status == .active {
                 telegramDownloadService.terminate(id: telegramTasks[index].id)
             }
+            telegramDownloadSpeeds[telegramTasks[index].id] = nil
             telegramTasks[index].status = .paused
             telegramTasks[index].downloadSpeed = "0 B/s"
             telegramTasks[index].remainingTime = "--"
         }
+        updateTransferSpeedTexts()
 
         if connectionState == .connected {
             do {
@@ -720,6 +727,8 @@ final class AppStore: ObservableObject {
         guard let task = selectedTask else { return }
         if task.backend == .telegram {
             telegramDownloadService.terminate(id: task.id)
+            telegramDownloadSpeeds[task.id] = nil
+            updateTransferSpeedTexts()
             telegramTasks.removeAll { $0.id == task.id }
             addHistoryItem(
                 HistoryItem(
@@ -997,9 +1006,9 @@ final class AppStore: ObservableObject {
                 backend: .telegram,
                 status: .waiting,
                 progress: 0,
-                completedSize: "--",
+                completedSize: "0 B",
                 totalSize: "--",
-                downloadSpeed: "--",
+                downloadSpeed: "0 B/s",
                 uploadSpeed: "0 B/s",
                 remainingTime: "等待启动",
                 savePath: destination,
@@ -1031,6 +1040,8 @@ final class AppStore: ObservableObject {
             telegramTasks[index].downloadSpeed = "0 B/s"
             telegramTasks[index].remainingTime = "等待 tdl"
             telegramTasks[index].detail = "另一个 Telegram 下载完成后会自动开始。"
+            telegramDownloadSpeeds[taskID] = nil
+            updateTransferSpeedTexts()
             return
         }
 
@@ -1039,16 +1050,23 @@ final class AppStore: ObservableObject {
             let destination = telegramTasks[index].savePath
             telegramTasks[index].status = .active
             telegramTasks[index].progress = 0
-            telegramTasks[index].downloadSpeed = "tdl"
-            telegramTasks[index].remainingTime = "下载中"
+            telegramTasks[index].completedSize = "0 B"
+            telegramTasks[index].totalSize = "--"
+            telegramTasks[index].downloadSpeed = "0 B/s"
+            telegramTasks[index].remainingTime = "正在连接 tdl"
             telegramTasks[index].errorMessage = nil
-            telegramTasks[index].detail = "tdl 正在直接下载 Telegram 视频或媒体。"
+            telegramTasks[index].detail = "tdl 正在下载到 \(destination)。"
+            telegramDownloadSpeeds[taskID] = 0
+            updateTransferSpeedTexts()
             updateDockBadge()
 
             try telegramDownloadService.start(
                 id: taskID,
                 links: links,
-                downloadDirectory: destination
+                downloadDirectory: destination,
+                progress: { [weak self] progress in
+                    self?.updateTelegramProgress(taskID: taskID, progress: progress)
+                }
             ) { [weak self] result in
                 self?.finishTelegramDownload(taskID: taskID, result: result)
             }
@@ -1065,6 +1083,8 @@ final class AppStore: ObservableObject {
 
         switch result {
         case .cancelled:
+            telegramDownloadSpeeds[taskID] = nil
+            updateTransferSpeedTexts()
             if telegramTasks[index].status == .active {
                 telegramTasks[index].status = .paused
                 telegramTasks[index].downloadSpeed = "0 B/s"
@@ -1075,6 +1095,8 @@ final class AppStore: ObservableObject {
             return
 
         case .completed:
+            telegramDownloadSpeeds[taskID] = nil
+            updateTransferSpeedTexts()
             telegramTasks[index].status = .complete
             telegramTasks[index].progress = 1
             telegramTasks[index].downloadSpeed = "0 B/s"
@@ -1093,6 +1115,8 @@ final class AppStore: ObservableObject {
             )
 
         case .failed(let rawMessage):
+            telegramDownloadSpeeds[taskID] = nil
+            updateTransferSpeedTexts()
             let message = telegramErrorMessage(rawMessage)
             telegramTasks[index].status = .failed
             telegramTasks[index].downloadSpeed = "0 B/s"
@@ -1113,6 +1137,23 @@ final class AppStore: ObservableObject {
 
         updateDockBadge()
         startNextTelegramDownload()
+    }
+
+    private func updateTelegramProgress(taskID: String, progress: TDLProgressSnapshot) {
+        guard let index = telegramTasks.firstIndex(where: { $0.id == taskID }),
+              telegramTasks[index].status == .active else {
+            return
+        }
+
+        telegramTasks[index].progress = progress.fractionCompleted
+        telegramTasks[index].completedSize = Self.formatBytes(progress.downloadedBytes)
+        telegramTasks[index].totalSize = progress.totalBytes.map { "约 \(Self.formatBytes($0))" } ?? "--"
+        telegramTasks[index].downloadSpeed = Self.formatSpeed(progress.bytesPerSecond)
+        telegramTasks[index].remainingTime = progress.estimatedTimeRemaining.map { "剩余 \($0)" } ?? "计算中"
+        telegramTasks[index].detail = "tdl 正在下载到 \(telegramTasks[index].savePath)。"
+        telegramDownloadSpeeds[taskID] = progress.bytesPerSecond
+        updateTransferSpeedTexts()
+        updateDockBadge()
     }
 
     private func startNextTelegramDownload() {
@@ -1285,8 +1326,9 @@ final class AppStore: ObservableObject {
         async let stopped = client.tellStopped()
 
         let (stat, activeTasks, waitingTasks, stoppedTasks) = try await (globalStat, active, waiting, stopped)
-        downloadSpeedText = Self.formatSpeed(stat.downloadSpeed)
-        uploadSpeedText = Self.formatSpeed(stat.uploadSpeed)
+        ariaDownloadSpeedBytes = Self.int64(stat.downloadSpeed)
+        ariaUploadSpeedBytes = Self.int64(stat.uploadSpeed)
+        updateTransferSpeedTexts()
 
         let previousSelection = selectedTaskID
         let refreshedTasks = (activeTasks + waitingTasks + stoppedTasks).map(Self.makeDownloadTask)
@@ -1548,6 +1590,12 @@ final class AppStore: ObservableObject {
         dockService.update(activeCount: activeCount, progress: activeCount > 0 ? activeProgress : nil)
     }
 
+    private func updateTransferSpeedTexts() {
+        let telegramSpeed = telegramDownloadSpeeds.values.reduce(Int64(0), +)
+        downloadSpeedText = Self.formatSpeed(ariaDownloadSpeedBytes + telegramSpeed)
+        uploadSpeedText = Self.formatSpeed(ariaUploadSpeedBytes)
+    }
+
     private func makeClient() -> Aria2Client {
         Aria2Client(port: activeRPCPort ?? settings.rpcPort, token: activeRPCToken)
     }
@@ -1602,9 +1650,10 @@ final class AppStore: ObservableObject {
     }
 
     private func resolvedDownloadDirectory(_ downloadDirectory: String?) -> String {
-        let trimmedDirectory = downloadDirectory?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let directory = trimmedDirectory?.isEmpty == false ? trimmedDirectory! : settings.downloadDirectory
-        let expandedDirectory = (directory as NSString).expandingTildeInPath
+        let expandedDirectory = DownloadDirectoryResolver.resolve(
+            preferred: downloadDirectory,
+            fallback: settings.downloadDirectory
+        )
         try? FileManager.default.createDirectory(atPath: expandedDirectory, withIntermediateDirectories: true)
         return expandedDirectory
     }

@@ -125,7 +125,8 @@ enum TDLCommandBuilder {
             "-d", expandedDirectory,
             "--continue",
             "--group",
-            "--skip-same"
+            "--skip-same",
+            "--disable-progress-ps"
         ])
 
         return TDLCommand(
@@ -136,15 +137,35 @@ enum TDLCommandBuilder {
     }
 }
 
+enum DownloadDirectoryResolver {
+    static func selectedPath(from url: URL) -> String? {
+        guard url.isFileURL else { return nil }
+        let path = url.standardizedFileURL.path
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return path.isEmpty ? nil : path
+    }
+
+    static func resolve(preferred: String?, fallback: String) -> String {
+        let trimmedPreferred = preferred?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let selected = trimmedPreferred?.isEmpty == false ? trimmedPreferred! : fallback
+        let expanded = (selected as NSString).expandingTildeInPath
+        return URL(fileURLWithPath: expanded, isDirectory: true).standardizedFileURL.path
+    }
+}
+
 enum TDLOutputSanitizer {
     private static let ansiExpression = try? NSRegularExpression(
         pattern: #"\u001B\[[0-?]*[ -/]*[@-~]"#
     )
 
-    static func errorMessage(from data: Data) -> String {
-        guard var value = String(data: data, encoding: .utf8) else { return "" }
+    static func strippingControlSequences(from value: String) -> String {
         let range = NSRange(value.startIndex..., in: value)
-        value = ansiExpression?.stringByReplacingMatches(in: value, range: range, withTemplate: "") ?? value
+        return ansiExpression?.stringByReplacingMatches(in: value, range: range, withTemplate: "") ?? value
+    }
+
+    static func errorMessage(from data: Data) -> String {
+        guard let rawValue = String(data: data, encoding: .utf8) else { return "" }
+        let value = strippingControlSequences(from: rawValue)
 
         let lines = value
             .components(separatedBy: .newlines)
@@ -155,6 +176,133 @@ enum TDLOutputSanitizer {
     }
 }
 
+struct TDLProgressSnapshot: Equatable, Sendable {
+    let fractionCompleted: Double
+    let downloadedBytes: Int64
+    let totalBytes: Int64?
+    let bytesPerSecond: Int64
+    let estimatedTimeRemaining: String?
+}
+
+struct TDLProgressParser {
+    private struct TrackerProgress {
+        let fractionCompleted: Double
+        let downloadedBytes: Int64
+        let totalBytes: Int64?
+        let bytesPerSecond: Int64
+        let estimatedTimeRemaining: String?
+    }
+
+    private static let progressExpression = try? NSRegularExpression(
+        pattern: #"^(.*?)\s+([0-9]+(?:\.[0-9]+)?)%\s+\[[^\]]*\]\s+\[\s*([0-9]+(?:\.[0-9]+)?)\s*(B|KB|MB|GB|TB)\s+in\s+[^;\]]+(?:;\s*~?ETA:\s*([^;\]]+))?;\s*([0-9]+(?:\.[0-9]+)?)\s*(B|KB|MB|GB|TB)/s\]"#
+    )
+
+    private var pendingData = Data()
+    private var trackers: [String: TrackerProgress] = [:]
+
+    mutating func consume(_ data: Data) -> TDLProgressSnapshot? {
+        guard !data.isEmpty else { return nil }
+        pendingData.append(data)
+
+        var latestSnapshot: TDLProgressSnapshot?
+        while let newlineIndex = pendingData.firstIndex(of: 0x0A) {
+            let lineData = pendingData[pendingData.startIndex..<newlineIndex]
+            pendingData.removeSubrange(pendingData.startIndex...newlineIndex)
+            let line = String(decoding: lineData, as: UTF8.self)
+            if let snapshot = parse(line: line) {
+                latestSnapshot = snapshot
+            }
+        }
+        return latestSnapshot
+    }
+
+    private mutating func parse(line rawLine: String) -> TDLProgressSnapshot? {
+        let line = TDLOutputSanitizer.strippingControlSequences(from: rawLine)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !line.isEmpty,
+              let expression = Self.progressExpression else {
+            return nil
+        }
+
+        let range = NSRange(line.startIndex..., in: line)
+        guard let match = expression.firstMatch(in: line, range: range),
+              let key = capture(1, match: match, in: line)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !key.isEmpty,
+              let percentText = capture(2, match: match, in: line),
+              let percent = Double(percentText),
+              let downloadedText = capture(3, match: match, in: line),
+              let downloadedUnit = capture(4, match: match, in: line),
+              let downloadedBytes = Self.bytes(value: downloadedText, unit: downloadedUnit),
+              let speedText = capture(6, match: match, in: line),
+              let speedUnit = capture(7, match: match, in: line),
+              let bytesPerSecond = Self.bytes(value: speedText, unit: speedUnit) else {
+            return nil
+        }
+
+        let fractionCompleted = min(max(percent / 100, 0), 1)
+        let totalBytes = fractionCompleted > 0
+            ? Int64((Double(downloadedBytes) / fractionCompleted).rounded())
+            : nil
+        let eta = capture(5, match: match, in: line)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        trackers[key] = TrackerProgress(
+            fractionCompleted: fractionCompleted,
+            downloadedBytes: downloadedBytes,
+            totalBytes: totalBytes,
+            bytesPerSecond: bytesPerSecond,
+            estimatedTimeRemaining: eta?.isEmpty == false ? eta : nil
+        )
+
+        let values = Array(trackers.values)
+        let downloadedTotal = values.reduce(Int64(0)) { $0 + $1.downloadedBytes }
+        let speedTotal = values.reduce(Int64(0)) { $0 + $1.bytesPerSecond }
+        let estimatedTotals = values.compactMap(\.totalBytes)
+        let estimatedTotal = estimatedTotals.count == values.count
+            ? estimatedTotals.reduce(Int64(0), +)
+            : nil
+        let aggregateFraction: Double
+        if values.count == 1, let first = values.first {
+            aggregateFraction = first.fractionCompleted
+        } else if let estimatedTotal, estimatedTotal > 0 {
+            aggregateFraction = Double(downloadedTotal) / Double(estimatedTotal)
+        } else {
+            aggregateFraction = values.isEmpty
+                ? 0
+                : values.reduce(0) { $0 + $1.fractionCompleted } / Double(values.count)
+        }
+
+        return TDLProgressSnapshot(
+            fractionCompleted: min(max(aggregateFraction, 0), 1),
+            downloadedBytes: downloadedTotal,
+            totalBytes: estimatedTotal,
+            bytesPerSecond: speedTotal,
+            estimatedTimeRemaining: values.compactMap(\.estimatedTimeRemaining).last
+        )
+    }
+
+    private func capture(_ index: Int, match: NSTextCheckingResult, in value: String) -> String? {
+        let range = match.range(at: index)
+        guard range.location != NSNotFound,
+              let stringRange = Range(range, in: value) else {
+            return nil
+        }
+        return String(value[stringRange])
+    }
+
+    private static func bytes(value: String, unit: String) -> Int64? {
+        guard let number = Double(value) else { return nil }
+        let multiplier: Double = switch unit {
+        case "KB": 1_024
+        case "MB": 1_024 * 1_024
+        case "GB": 1_024 * 1_024 * 1_024
+        case "TB": 1_024 * 1_024 * 1_024 * 1_024
+        default: 1
+        }
+        return Int64((number * multiplier).rounded())
+    }
+}
+
 enum TDLRunResult: Equatable, Sendable {
     case completed
     case cancelled
@@ -162,7 +310,47 @@ enum TDLRunResult: Equatable, Sendable {
 }
 
 private final class TDLRunContext: @unchecked Sendable {
+    let outputPipe = Pipe()
     let errorPipe = Pipe()
+
+    private let lock = NSLock()
+    private var parser = TDLProgressParser()
+    private var errorData = Data()
+    private var lastProgressEmission = 0.0
+
+    func consumeOutput(_ data: Data) -> TDLProgressSnapshot? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let snapshot = parser.consume(data) else { return nil }
+
+        let now = ProcessInfo.processInfo.systemUptime
+        guard snapshot.fractionCompleted >= 1 || now - lastProgressEmission >= 0.2 else {
+            return nil
+        }
+        lastProgressEmission = now
+        return snapshot
+    }
+
+    func appendError(_ data: Data) {
+        guard !data.isEmpty else { return }
+        lock.lock()
+        errorData.append(data)
+        if errorData.count > 64 * 1_024 {
+            errorData.removeFirst(errorData.count - 64 * 1_024)
+        }
+        lock.unlock()
+    }
+
+    func capturedError() -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return errorData
+    }
+
+    func stopReading() {
+        outputPipe.fileHandleForReading.readabilityHandler = nil
+        errorPipe.fileHandleForReading.readabilityHandler = nil
+    }
 }
 
 @MainActor
@@ -186,6 +374,7 @@ final class TelegramDownloadService {
         id: String,
         links: [TelegramMessageLink],
         downloadDirectory: String,
+        progress: @escaping @MainActor @Sendable (TDLProgressSnapshot) -> Void = { _ in },
         completion: @escaping @MainActor @Sendable (TDLRunResult) -> Void
     ) throws {
         guard processes[id]?.isRunning != true else { return }
@@ -206,13 +395,34 @@ final class TelegramDownloadService {
         process.arguments = command.arguments
         process.currentDirectoryURL = command.workingDirectoryURL
         process.standardInput = FileHandle.nullDevice
-        process.standardOutput = FileHandle.nullDevice
+        process.standardOutput = context.outputPipe
         process.standardError = context.errorPipe
         var environment = ProcessInfo.processInfo.environment
         environment["NO_COLOR"] = "1"
         process.environment = environment
+        context.outputPipe.fileHandleForReading.readabilityHandler = { [context] handle in
+            let data = handle.availableData
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            guard let snapshot = context.consumeOutput(data) else { return }
+            Task { @MainActor in
+                progress(snapshot)
+            }
+        }
+        context.errorPipe.fileHandleForReading.readabilityHandler = { [context] handle in
+            let data = handle.availableData
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            context.appendError(data)
+        }
         process.terminationHandler = { [weak self, context] finishedProcess in
-            let errorData = context.errorPipe.fileHandleForReading.readDataToEndOfFile()
+            context.stopReading()
+            context.appendError(context.errorPipe.fileHandleForReading.readDataToEndOfFile())
+            let errorData = context.capturedError()
             let status = finishedProcess.terminationStatus
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -228,8 +438,13 @@ final class TelegramDownloadService {
             }
         }
 
-        try process.run()
-        processes[id] = process
+        do {
+            try process.run()
+            processes[id] = process
+        } catch {
+            context.stopReading()
+            throw error
+        }
     }
 
     func terminate(id: String) {

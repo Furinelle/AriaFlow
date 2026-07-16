@@ -47,7 +47,8 @@ struct TelegramDownloadServiceTests {
             "-d", ("~/Downloads/Telegram" as NSString).expandingTildeInPath,
             "--continue",
             "--group",
-            "--skip-same"
+            "--skip-same",
+            "--disable-progress-ps"
         ])
         #expect(command.workingDirectoryURL.path == ("~/Downloads/Telegram" as NSString).expandingTildeInPath)
     }
@@ -98,5 +99,49 @@ struct TelegramDownloadServiceTests {
             from: Data("\u{001B}[31mnot logged in\u{001B}[0m\n".utf8)
         )
         #expect(value == "not logged in")
+    }
+
+    @Test("keeps an explicitly selected download directory")
+    func resolvesSelectedDownloadDirectory() {
+        let selectedURL = URL(
+            filePath: "/tmp/AriaFlow/Telegram",
+            directoryHint: .isDirectory
+        )
+
+        #expect(
+            DownloadDirectoryResolver.selectedPath(from: selectedURL)
+                == "/tmp/AriaFlow/Telegram"
+        )
+        #expect(
+            DownloadDirectoryResolver.resolve(
+                preferred: "/tmp/AriaFlow/Telegram",
+                fallback: "/tmp/AriaFlow/Fallback"
+            ) == "/tmp/AriaFlow/Telegram"
+        )
+    }
+
+    @Test("parses chunked tdl progress output")
+    func parsesTDLProgressOutput() {
+        var parser = TDLProgressParser()
+        let firstChunk = Data(
+            "\u{001B}[34mTelegram(1216816802):131603 -> video 100% final.mp4\u{001B}[0m "
+                .utf8
+        )
+        let secondChunk = Data(
+            ("\u{001B}[91m 1.5%\u{001B}[0m [........] "
+                + "[\u{001B}[36m7.00 MB\u{001B}[0m in 4.394s; "
+                + "~ETA: \u{001B}[32m7m15s\u{001B}[0m; "
+                + "\u{001B}[35m1.59 MB\u{001B}[0m/s]\n")
+                .utf8
+        )
+
+        #expect(parser.consume(firstChunk) == nil)
+        let progress = parser.consume(secondChunk)
+
+        #expect(progress?.fractionCompleted == 0.015)
+        #expect(progress?.downloadedBytes == 7 * 1_024 * 1_024)
+        #expect(progress?.bytesPerSecond == 1_667_236)
+        #expect(progress?.estimatedTimeRemaining == "7m15s")
+        #expect(progress?.totalBytes == 489_335_467)
     }
 }

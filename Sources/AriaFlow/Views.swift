@@ -408,6 +408,13 @@ struct TaskRowView: View {
                         .font(.system(size: 13, weight: .semibold))
                         .lineLimit(1)
 
+                    if task.backend == .telegram {
+                        Text(task.savePath)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 }
 
                 Spacer()
@@ -418,7 +425,7 @@ struct TaskRowView: View {
             }
 
             HStack(spacing: 10) {
-                if task.backend == .telegram && task.status == .active {
+                if task.backend == .telegram && task.status == .active && task.progress <= 0 {
                     ProgressView()
                         .controlSize(.small)
                         .tint(task.status.color)
@@ -435,12 +442,8 @@ struct TaskRowView: View {
 
             HStack {
                 Text(task.remainingTime)
-                if task.backend == .telegram {
-                    Text("由 tdl 直接下载")
-                } else {
-                    Text("\(Int(task.progress * 100))%")
-                    Text("\(task.completedSize) / \(task.totalSize)")
-                }
+                Text("\(Int((task.progress * 100).rounded()))%")
+                Text("\(task.completedSize) / \(task.totalSize)")
                 Spacer()
                 if task.backend == .aria2 && task.uploadSpeed != "0 KB/s" {
                     Text("↑ \(task.uploadSpeed)")
@@ -719,6 +722,7 @@ struct AddTaskSheet: View {
     @State private var fileName = ""
     @State private var downloadDirectory = ""
     @State private var splitCount = 64
+    @State private var didLoadDefaults = false
 
     private var hasURLInput: Bool {
         !parsedURLs.isEmpty
@@ -769,7 +773,12 @@ struct AddTaskSheet: View {
             }
         }
         .onAppear {
-            downloadDirectory = store.settings.downloadDirectory
+            guard !didLoadDefaults else { return }
+            didLoadDefaults = true
+            downloadDirectory = DownloadDirectoryResolver.resolve(
+                preferred: store.settings.downloadDirectory,
+                fallback: "~/Downloads"
+            )
             splitCount = store.settings.splitCount
         }
     }
@@ -1139,9 +1148,19 @@ struct AddTaskSheet: View {
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = true
         panel.prompt = "选择"
+        panel.message = "选择后的完整目录会显示在下载任务中"
+        panel.directoryURL = URL(
+            fileURLWithPath: DownloadDirectoryResolver.resolve(
+                preferred: downloadDirectory,
+                fallback: store.settings.downloadDirectory
+            ),
+            isDirectory: true
+        )
 
-        if panel.runModal() == .OK, let url = panel.url {
-            downloadDirectory = url.path
+        if panel.runModal() == .OK,
+           let url = panel.url,
+           let selectedPath = DownloadDirectoryResolver.selectedPath(from: url) {
+            downloadDirectory = selectedPath
         }
     }
 
@@ -1812,9 +1831,18 @@ struct SettingsWindowView: View {
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = true
         panel.prompt = "选择"
+        panel.directoryURL = URL(
+            fileURLWithPath: DownloadDirectoryResolver.resolve(
+                preferred: store.settings.downloadDirectory,
+                fallback: "~/Downloads"
+            ),
+            isDirectory: true
+        )
 
-        if panel.runModal() == .OK, let url = panel.url {
-            store.settings.downloadDirectory = url.path
+        if panel.runModal() == .OK,
+           let url = panel.url,
+           let selectedPath = DownloadDirectoryResolver.selectedPath(from: url) {
+            store.settings.downloadDirectory = selectedPath
         }
     }
 
